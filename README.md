@@ -1,2 +1,4 @@
 # ucifs
-FUSE filesystem to read &amp; write virtual files in the UCI format used by OpenWRT. Uses libelektra as the backend.
+FUSE filesystem to read &amp; write virtual files in the UCI format used by OpenWRT.
+
+Uses libelektra as the backend to store the actual configuration values.
