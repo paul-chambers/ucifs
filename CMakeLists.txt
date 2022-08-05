@@ -8,7 +8,7 @@ set(CMAKE_C_FLAGS_DEBUG "-g -DDEBUG=1")
 
 include_directories(.)
 
-add_executable(ucifs ucifs.c)
+add_executable(ucifs ucifs.c logStuff.c logStuff.h)
 
 target_link_libraries(ucifs fuse3)
 
