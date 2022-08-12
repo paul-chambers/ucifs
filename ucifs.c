@@ -4,9 +4,8 @@
     requires libfuse3-dev package to be installed
 */
 
-#define _GNU_SOURCE 1
+#define _GNU_SOURCE
 
-#include <features.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <sys/types.h>
@@ -17,6 +16,10 @@
 #define FUSE_USE_VERSION 35
 #include <fuse3/fuse.h>
 
+/* do this explicitly, as builds on x86-64 define it as zero */
+#undef  O_LARGEFILE
+#define O_LARGEFILE 0x00008000
+
 #include "logStuff.h"
 
 typedef unsigned char byte;
@@ -24,21 +27,21 @@ typedef unsigned long tHash;
 
 const char * testPaths[] = { "/network", "/system", "/wireless", "/dhcp", NULL };
 
-typedef struct sUCIfile {
-    struct sUCIfile *   next;
-    struct stat         st;
-    const char *        path;
-    tHash               pathHash;
-    char *              contents;
-    int                 buildCount;     // set to the current value of buildCounter when 'seen' during a populateRoot
-    tBool               dirty;
-} tUCIfile;
+typedef struct sFileHandle {
+    struct sFileHandle * next;
+    struct stat          st;
+    const char *         path;
+    tHash                pathHash;
+    byte *               contents;
+    int                  buildCount;     // for 'mark/sweep' GC. will be set equal to buildCounter during a populateRoot.
+    tBool                dirty;
+} tFileHandle;
 
 typedef struct {
-    time_t              lastUpdated;    // last time the root dir was populated
-    int                 buildCounter;   // part of a 'mark/sweep' algo to maintain the root dir
-    struct sUCIfile *   rootFiles;
-    struct stat         rootStat;
+    time_t               lastUpdated;    // last time the root dir was populated
+    int                  buildCounter;   // part of a 'mark/sweep' algo to maintain the root dir
+    struct sFileHandle * rootFiles;
+    struct stat          rootStat;
 } tMountPoint;
 
 tHash hashString( const char * string )
@@ -70,33 +73,60 @@ char * appendStr( char * p, long remaining, const char * flagName )
     return p;
 }
 
-const char * openFlagsAsStr( unsigned int flags )
+const char * openFlagsAsStr( int flags )
 {
     static char temp[1024];
+    temp[0] = '\0';
+    temp[1] = '\0';
     char * p = temp;
+    char * end = &temp[sizeof(temp)];
 
-    if ( flags & O_RDONLY )    p = appendStr( p, (temp + sizeof(temp) ) - p, "RdOnly" );
-	if ( flags & O_WRONLY )    p = appendStr( p, (temp + sizeof(temp) ) - p, "WrOnly" );
-	if ( flags & O_RDWR )      p = appendStr( p, (temp + sizeof(temp) ) - p, "RdWr" );
-	if ( flags & O_CLOEXEC )   p = appendStr( p, (temp + sizeof(temp) ) - p, "CloExec" );
-	if ( flags & O_CREAT )     p = appendStr( p, (temp + sizeof(temp) ) - p, "Create" );
-	if ( flags & O_DIRECTORY ) p = appendStr( p, (temp + sizeof(temp) ) - p, "Directory" );
-	if ( flags & O_EXCL )      p = appendStr( p, (temp + sizeof(temp) ) - p, "Excl" );
-	if ( flags & O_NOCTTY )    p = appendStr( p, (temp + sizeof(temp) ) - p, "NoCTTY" );
-	if ( flags & O_NOFOLLOW )  p = appendStr( p, (temp + sizeof(temp) ) - p, "NoFollow" );
-	if ( flags & O_TMPFILE )   p = appendStr( p, (temp + sizeof(temp) ) - p, "TmpFile" );
-	if ( flags & O_TRUNC )     p = appendStr( p, (temp + sizeof(temp) ) - p, "Trunc" );
-	if ( flags & O_APPEND )    p = appendStr( p, (temp + sizeof(temp) ) - p, "Append" );
-	if ( flags & O_NONBLOCK )  p = appendStr( p, (temp + sizeof(temp) ) - p, "NonBlock" );
-	if ( flags & O_PATH )      p = appendStr( p, (temp + sizeof(temp) ) - p, "Path" );
-	if ( flags & O_DSYNC )     p = appendStr( p, (temp + sizeof(temp) ) - p, "DSync" );
-	if ( flags & O_DIRECT )    p = appendStr( p, (temp + sizeof(temp) ) - p, "Direct" );
-	if ( flags & O_LARGEFILE ) p = appendStr( p, (temp + sizeof(temp) ) - p, "LargeFile" );
-	if ( flags & O_NOATIME )   p = appendStr( p, (temp + sizeof(temp) ) - p, "NoAtime" );
-    if ( flags & O_LARGEFILE ) p = appendStr( p, (temp + sizeof(temp) ) - p, "LargeFile" );
+    switch ( flags & O_ACCMODE )
+    {
+    case O_RDONLY: p = appendStr( p, end - p, "RdOnly" ); break;
+    case O_WRONLY: p = appendStr( p, end - p, "WrOnly" ); break;
+    case O_RDWR:   p = appendStr( p, end - p, "RdWr" );   break;
+    }
+	if ( flags & O_CREAT     /* 0x000040 */ )  p = appendStr( p, end - p, "Create" );
+	if ( flags & O_EXCL      /* 0x000080 */ )  p = appendStr( p, end - p, "Excl" );
+	if ( flags & O_NOCTTY    /* 0x000100 */ )  p = appendStr( p, end - p, "NoCTTY" );
+    if ( flags & O_TRUNC     /* 0x000200 */ )  p = appendStr( p, end - p, "Trunc" );
+    if ( flags & O_APPEND    /* 0x000400 */ )  p = appendStr( p, end - p, "Append" );
+    if ( flags & O_NONBLOCK  /* 0x000800 */ )  p = appendStr( p, end - p, "NonBlock" );
+    if ( flags & O_DSYNC     /* 0x001000 */ )  p = appendStr( p, end - p, "DSync" );
+    if ( flags & O_ASYNC     /* 0x002000 */ )  p = appendStr( p, end - p, "ASync" );
+    if ( flags & O_DIRECT    /* 0x004000 */ )  p = appendStr( p, end - p, "Direct" );
+    if ( flags & O_LARGEFILE /* 0x008000 */ )  p = appendStr( p, end - p, "LargeFile" );
+    if ( flags & O_DIRECTORY /* 0x010000 */ )  p = appendStr( p, end - p, "Directory" );
+	if ( flags & O_NOFOLLOW  /* 0x020000 */ )  p = appendStr( p, end - p, "NoFollow" );
+    if ( flags & O_NOATIME   /* 0x040000 */ )  p = appendStr( p, end - p, "NoAtime" );
+    if ( flags & O_CLOEXEC   /* 0x080000 */ )  p = appendStr( p, end - p, "CloExec" );
+	if ( flags & O_PATH      /* 0x200000 */ )  p = appendStr( p, end - p, "Path" );
+    if ( flags & O_TMPFILE   /* 0x400000 */ )  p = appendStr( p, end - p, "TmpFile" );
 
     return &temp[1];
 }
+
+const char * createModeAsStr( unsigned int mode )
+{
+    static char temp[10];
+
+    memset( temp, '-', 9 );
+    temp[9] = '\0';
+
+    if ( mode & S_IRUSR ) temp[0] = 'r';
+    if ( mode & S_IWUSR ) temp[1] = 'w';
+    if ( mode & S_IXUSR ) temp[2] = 'x';
+    if ( mode & S_IRGRP ) temp[3] = 'r';
+    if ( mode & S_IWGRP ) temp[4] = 'w';
+    if ( mode & S_IXGRP ) temp[5] = 'x';
+    if ( mode & S_IROTH ) temp[6] = 'r';
+    if ( mode & S_IWOTH ) temp[7] = 'w';
+    if ( mode & S_IXOTH ) temp[8] = 'x';
+
+    return temp;
+}
+
 
 tMountPoint * getMP( void )
 {
@@ -108,13 +138,13 @@ tMountPoint * getMP( void )
     return NULL;
 }
 
-tUCIfile * newFH( const char * path )
+tFileHandle * newFH( const char * path )
 {
-    tUCIfile * result = NULL;
+    tFileHandle * result = NULL;
 
     if ( path != NULL )
     {
-        result = calloc( 1, sizeof( tUCIfile ) );
+        result = calloc( 1, sizeof( tFileHandle ) );
         if ( result != NULL )
         {
             result->path     = strdup( path );
@@ -145,6 +175,19 @@ tUCIfile * newFH( const char * path )
             result->st.st_mode  = S_IFREG | S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH; // 0644
             result->st.st_nlink = 1;
             result->st.st_size  = 1024;
+
+            time_t now = time(NULL);
+            result->st.st_atime = now; // The last "a"ccess of the file
+            result->st.st_mtime = now; // The last "m"odification of the file
+            result->st.st_ctime = now; // The last "c"hange of the attributes of the file (it's new)
+
+            /* add it to the current list of files in the root dir */
+            tMountPoint * mountPoint = getMP();
+            if ( mountPoint != NULL )
+            {
+                result->next = mountPoint->rootFiles;
+                mountPoint->rootFiles = result;
+            }
         }
     }
 
@@ -158,56 +201,49 @@ const char * iterateUCIfiles( int i )
     return path;
 }
 
-tUCIfile * getFH( struct fuse_file_info * fi,
-                  const char * path )
+tFileHandle * findFH( const char * path )
 {
-    tUCIfile * result = NULL;
+    tFileHandle * result = NULL;
 
-    if ( path == NULL)
+    tMountPoint * mountPoint = getMP();
+    if ( mountPoint != NULL )
     {
-        logError( "supplied path is null" );
+        result = mountPoint->rootFiles;
+
+        tHash hash = hashString( path );
+        while ( result != NULL )
+        {
+            if ( hash == result->pathHash )
+                break; /* found an existing matching entry, so exit loop prematurely */
+
+            result = result->next;
+        }
+    }
+
+    return result;
+}
+
+tFileHandle * getFH( struct fuse_file_info * fi,
+                     const char * path )
+{
+    tFileHandle * result = NULL;
+
+    if ( path == NULL || *path == '\0' )
+    {
+        logError( "supplied path is empty" );
         return NULL;
     }
 
     if ( fi != NULL )
     {
-        result = (tUCIfile *) fi->fh;
+        result = (tFileHandle *) fi->fh;
     }
 
     /* if fi (or fi->fh) is NULL, search through the root files
      * for a match to the path. Often the case for doGetAttr() */
     if ( result == NULL )
     {
-        tMountPoint * mountPoint = getMP();
-        if ( mountPoint != NULL)
-        {
-            tHash pathHash = hashString( path );
-            result = mountPoint->rootFiles;
-            while ( result != NULL)
-            {
-                if ( pathHash == result->pathHash )
-                {
-                    logDebug( "matched \'%s\'", path );
-                    break;
-                }
-                result = result->next;
-            }
-        }
-    }
-
-    /* still haven't found it, so make a new one */
-    if ( result == NULL )
-    {
-        result = newFH( path );
-        if ( result != NULL )
-        {
-            tMountPoint * mountPoint = getMP();
-            if ( mountPoint != NULL )
-            {
-                result->next = mountPoint->rootFiles;
-                mountPoint->rootFiles = result;
-            }
-        }
+        result = findFH( path );
     }
 
     if ( result != NULL && fi != NULL )
@@ -218,7 +254,7 @@ tUCIfile * getFH( struct fuse_file_info * fi,
 #ifdef DEBUG
     if ( result == NULL)
     {
-        logError("UCI file handle is null");
+        logError("no matching UCI file handle found");
     }
     else if ( result->path == NULL)
     {
@@ -238,39 +274,34 @@ tUCIfile * getFH( struct fuse_file_info * fi,
     return result;
 }
 
-int populateFH( tUCIfile * fh )
+int populateFH( tFileHandle * fh )
 {
     int result = -EINVAL;
 
     if ( fh != NULL )
     {
-        fh->st.st_atime = time(NULL); // The last "a"ccess of the file/directory
+        /* ToDo: populate the contents from LibElektra */
         /* ToDo: set the ctime & mtime from the 'last changed' timestamps of the enclosed UCI values */
-        fh->st.st_mtime = time(NULL); // The last "m"odification of the contents of the file/directory
-        fh->st.st_ctime = time(NULL); // The last "c"change of the attributes of the file/directory
-
-        if ( fh->contents != NULL)
+        if ( fh->contents == NULL)
         {
-            free(fh->contents);
-        }
-        fh->st.st_size = 0;
-
-        int len = asprintf( &fh->contents, "Placeholder for %s\n", fh->path );
-        if ( len < 0 )
-        {
-            result = -errno;
-            logError( "unable to populate %s", fh->path );
-        }
-        else {
-            fh->st.st_size = len;
-            result = 0;
+            /* until we wire up LibElekta, set the contents to something */
+            int len = asprintf( (char **)&fh->contents, "Placeholder for %s\n", fh->path );
+            if ( len < 0 )
+            {
+                result = -errno;
+                logError( "unable to populate %s", fh->path );
+            }
+            else {
+                fh->st.st_size = len;
+                result = 0;
+            }
         }
     }
 
     return result;
 }
 
-int parseFH( tUCIfile * fh )
+int parseFH( tFileHandle * fh )
 {
     int result = -EINVAL;
 
@@ -283,7 +314,7 @@ int parseFH( tUCIfile * fh )
 }
 
 
-void releaseFH( tUCIfile * fh )
+void releaseFH( tFileHandle * fh )
 {
     if ( fh != NULL )
     {
@@ -301,12 +332,12 @@ int releaseRoot( tMountPoint * mountPoint )
 
     if ( mountPoint != NULL )
     {
-        tUCIfile * fh = mountPoint->rootFiles;
+        tFileHandle * fh = mountPoint->rootFiles;
         mountPoint->rootFiles = NULL;
         mountPoint->rootStat.st_nlink = 0;
         while ( fh != NULL )
         {
-            tUCIfile * next = fh->next;
+            tFileHandle * next = fh->next;
             releaseFH( fh );
             fh = next;
         }
@@ -321,6 +352,13 @@ int populateRoot( tMountPoint * mountPoint )
 
     time_t now = time(NULL);
 
+    if ( mountPoint == NULL )
+    {
+        logError("mountPoint structure is absent");
+        return -EFAULT;
+    }
+
+    /* if we recently populated, then just reuse that */
     if ( (now - mountPoint->lastUpdated) < 5 )
     {
         return 0;
@@ -346,7 +384,7 @@ int populateRoot( tMountPoint * mountPoint )
 
     /* iterate through the current list of UCI files, marking the ones that still
      * exist with the new buildCount, and adding new ones */
-    tUCIfile * fh;
+    tFileHandle * fh;
     const char * path;
     int i = 0;
     do {
@@ -364,15 +402,12 @@ int populateRoot( tMountPoint * mountPoint )
             }
             if ( fh == NULL )
             {
-                logDebug( "new fh for \'%s\'", path );
                 // did not find a matching entry in the list, so create a new one and add it
+                logDebug( "new fh for \'%s\'", path );
                 fh = newFH( path );
                 if (fh != NULL)
                 {
                     populateFH( fh );
-
-                    fh->next = mountPoint->rootFiles;
-                    mountPoint->rootFiles = fh;
                 }
             }
             if ( fh != NULL )
@@ -384,12 +419,11 @@ int populateRoot( tMountPoint * mountPoint )
         }
     } while ( path != NULL );
 
-    logDebug( "count = %d",i );
     mountPoint->rootStat.st_nlink = i + 2; /* +2 to include '.' and '..' entries */
 
     /* now scan the list and remove anything that wasn't just marked with the new buildCount */
     fh = mountPoint->rootFiles;
-    tUCIfile ** prev = &mountPoint->rootFiles;
+    tFileHandle ** prev = &mountPoint->rootFiles;
     while ( fh != NULL )
     {
         if ( fh->buildCount == buildCount )
@@ -397,7 +431,9 @@ int populateRoot( tMountPoint * mountPoint )
             prev = &fh->next;
         }
         else {
-            /* a stale buildCount value means it's a 'dead' reference, so dispose of it */
+            /* a stale buildCount value means it's a 'dead' entry - i.e. a LibElektra entry that
+             * is no longer being returned by iterateUCIfiles(). So unlink and dispose of it */
+            logDebug( "remove \'%s\'", fh->path );
             *prev = fh->next;
             releaseFH( fh );
         }
@@ -420,8 +456,14 @@ static void * doInit( struct fuse_conn_info * conn,
     (void)conn; (void)cfg;
 
     logDebug( "init" );
+    tMountPoint * mountPoint = calloc( 1, sizeof(tMountPoint) );
+    if ( mountPoint != NULL )
+    {
+        /* prepoulate so everything is ready to go */
+        populateRoot( mountPoint );
+    }
 
-    return calloc( 1, sizeof(tMountPoint) );
+    return mountPoint;
 }
 
 /**
@@ -458,8 +500,8 @@ static int doGetAttr( const char * path,
 {
     logDebug( "getattr \'%s\' [%p]", path, fi );
 
-    int result = 0; // -EINVAL;
-    struct stat * src;
+    int result = -EINVAL;
+    struct stat * src = NULL;
 
     /* the only directory is at the root of the mount */
     if ( path[0] == '/' && path[1] == '\0' )
@@ -473,21 +515,21 @@ static int doGetAttr( const char * path,
     }
     else
     {
-        tUCIfile * fh = getFH( fi, path );
-        if ( fh != NULL )
-        {
+        tFileHandle * fh = getFH( fi, path );
+        if ( fh == NULL )
+            result = -ENOENT;
+        else {
             result = populateFH( fh );
             src = &fh->st;
         }
     }
 
-    if ( result == 0 )
+    if ( result == 0 && src != NULL )
     {
+        src->st_atime = time(NULL); // The last "a"ccess of the file/directory is right now
         memcpy( st, src, sizeof( struct stat ));
     }
-
-    if (result != 0)
-        logDebug("/getattr %d", result);
+    else logDebug("/getattr %d", result);
 
     return result;
 }
@@ -517,6 +559,7 @@ int doOpenDir( const char * path, struct fuse_file_info * fi )
         if ( mountPoint != NULL )
         {
             /* ToDo: check permissions */
+            mountPoint->rootStat.st_atime = time(NULL); // The last "a"ccess of the directory is right now
             result = populateRoot( mountPoint );
         }
     }
@@ -562,14 +605,16 @@ static int doReadDir( const char * path,
         tMountPoint * mountPoint = getMP();
         if ( mountPoint != NULL )
         {
-            tUCIfile * uciFile = mountPoint->rootFiles;
-            while ( uciFile != NULL )
+            for ( tFileHandle * uciFile = mountPoint->rootFiles;
+                  uciFile != NULL;
+                  uciFile = uciFile->next )
             {
                 const char * path = uciFile->path;
                 if ( *path == '/' ) ++path;
+
                 filler( buffer, path, NULL, 0, 0 );
-                uciFile = uciFile->next;
             }
+            mountPoint->rootStat.st_atime = time(NULL); // The last "a"ccess of the directory is right now
         }
     }
 
@@ -582,7 +627,11 @@ int doReleaseDir( const char * path, struct fuse_file_info * fi )
 {
     logDebug("releasedir \'%s\' [%p]", path, fi );
 
-    // tUCIfile * fh = getFH( fi, path );
+    tMountPoint * mountPoint = getMP();
+    if ( mountPoint != NULL )
+    {
+        mountPoint->rootStat.st_atime = time(NULL); // The last "a"ccess of the directory is right now
+    }
 
     return 0;
 }
@@ -630,18 +679,19 @@ int doReleaseDir( const char * path, struct fuse_file_info * fi )
 
 static int doOpen( const char * path, struct fuse_file_info * fi )
 {
-    int result = 0;
+    logDebug( "open \'%s\' %s [%p]", path, openFlagsAsStr(fi->flags), fi );
 
-    logDebug( "open \'%s\' 0x%x %s [%p]", path, fi->flags, openFlagsAsStr(fi->flags), fi );
+    int result = 0;
 
     if ( fi != NULL )
     {
-        tUCIfile * fh = getFH( fi, path );
-        if ( fh != NULL )
-        {
+        tFileHandle * fh = getFH( fi, path );
+        if ( fh == NULL )
+            result = -ENOENT;
+        else {
             if ( fi->flags & O_TRUNC )
             {
-                logDebug( "truncated" );
+                logDebug( " truncated" );
                 if ( fh->contents != NULL )
                 {
                     free( fh->contents );
@@ -649,6 +699,7 @@ static int doOpen( const char * path, struct fuse_file_info * fi )
                 }
                 fh->st.st_size = 0;
             }
+            result = populateFH( fh );
         }
     }
 
@@ -665,16 +716,37 @@ static int doOpen( const char * path, struct fuse_file_info * fi )
 **/
 static int doCreate(const char * path, mode_t mode, struct fuse_file_info * fi)
 {
-    logDebug( "create \'%s\' (0x%x) [%p]", path, mode, fi );
+    int result = 0;
+    logDebug( "create \'%s\' (0x%x) %s [%p]", path, mode, createModeAsStr(mode), fi );
 
-    if ( fi != NULL )
+    tFileHandle * fh = findFH( path );
+    /* we are not expecting to find a match, i.e. fh will be NULL */
+    if ( fh == NULL )
     {
-        logDebug("flags = 0x%x", fi->flags );
-        // tUCIfile * fh = getFH( fi, path );
-        // fh->contents
+        fh = newFH( path );
+        if ( fh != NULL )
+        {
+            if ( fi != NULL )
+            {
+                fi->fh = (uint64_t)fh;
+            }
+        }
+    }
+    if ( fh != NULL )
+    {
+        tMountPoint * mountPoint = getMP();
+        if (mountPoint != NULL )
+        {
+            time_t now = time(NULL);
+            mountPoint->rootStat.st_mtime = now; // we have "m"odified the root directory
+            mountPoint->rootStat.st_ctime = now; // also "c"hanged the attributes of the root directory
+        }
+
+        fh->st.st_mode = mode;
+        result = doOpen( path, fi );
     }
 
-    return 0;
+    return result;
 }
 
 /** Change the size of a file
@@ -685,8 +757,35 @@ static int doCreate(const char * path, mode_t mode, struct fuse_file_info * fi)
  */
 int doTruncate(const char * path, off_t offset, struct fuse_file_info * fi)
 {
+    int result = 0;
+
     logDebug( "create \'%s\' @%lu [%p]", path, offset, fi );
-    return 0;
+
+    tFileHandle * fh = getFH( fi, path );
+    if (fh == NULL)
+        result = -ENOENT;
+    else {
+        if ( offset <= 0 )
+        {
+            if ( fh->contents != NULL )
+            {
+                free( fh->contents );
+                fh->contents = NULL;
+            }
+        }
+        else { // offset > 0
+            if ( fh->contents == NULL )
+            {
+                fh->contents = calloc( offset, sizeof( byte ));
+            }
+            else {
+                fh->contents = realloc( fh->contents, offset );
+            }
+        }
+        fh->st.st_size = offset;
+        fh->st.st_mtime = time(NULL); // The last "m"odification of the contents of the file/directory
+    }
+    return result;
 }
 
 /**
@@ -708,19 +807,23 @@ static int doRelease( const char * path, struct fuse_file_info * fi )
 
     logDebug( "release \'%s\' [%p]", path, fi );
 
-    tUCIfile * fh = getFH( fi, path );
-
-    if ( fh != NULL )
-    {
+    tFileHandle * fh = getFH( fi, path );
+    if ( fh == NULL )
+        result = -ENOENT;
+    else {
         if ( fh->contents != NULL)
         {
             if ( fh->dirty )
             {
                 result = parseFH( fh );
+                fh->dirty = 0;
             }
-            // free( fh->contents );
-            // fh->contents = NULL;
-            // fh->st.st_size = 0;
+            /* ToDDo: drop the contents, we're done parsing it */
+#if 0
+            free( fh->contents );
+            fh->contents = NULL;
+            fh->st.st_size = 0;
+#endif
         }
     }
 
@@ -748,15 +851,13 @@ static int doRead( const char *path,
 
     ssize_t length = size;
 
-    tUCIfile * fh = getFH( fi, path );
-
-    if ( fh == NULL || fh->contents == NULL )
-    {
-        length = -1;
-    }
+    tFileHandle * fh = getFH( fi, path );
+    if ( fh == NULL )
+        length = -ENOENT;
     else {
         ssize_t remaining = fh->st.st_size - offset;
-        if ( remaining < 0 ) remaining = 0; // trying to read past the end, so trim
+        if ( remaining < 0 )
+            remaining = 0; // trying to read past the end, so trim
         if ( length > remaining )
         {
             // close enough to the end we can't satisfy the entire request
@@ -764,7 +865,7 @@ static int doRead( const char *path,
         }
         if ( length > 0 )
         {
-            memcpy( buffer, fh->contents + offset, length );
+            memcpy( buffer, &fh->contents[offset], length );
         }
         else {
             length = -1; // end of 'file'
@@ -794,7 +895,32 @@ static int doWrite( const char * path,
 
     logDebug( "write %s @%lu (%lu) [%p]", path, offset, size, fi );
 
-    // tUCIfile * fh = getFH( fi, path );
+    tFileHandle * fh = getFH( fi, path );
+    if ( fh == NULL )
+        size = -ENOENT;
+    else {
+        // ToDo: check permissions
+        ssize_t end = (ssize_t)(offset + size);
+        byte * contents = fh->contents;
+        if ( contents == NULL )
+        {
+            logDebug( " calloc" );
+            contents = calloc( end, sizeof(byte) );
+            fh->st.st_size = end;
+        }
+        else if ( end > fh->st.st_size)
+        {
+            logDebug( " realloc" );
+            contents = realloc( contents, end );
+            fh->st.st_size = end;
+        }
+
+        fh->contents = contents; // in case realloc() moved the block, or calloc() called.
+        fh->st.st_mtime = time(NULL); // The last "m"odification of the contents of the file/directory
+        fh->dirty = 1;
+        memcpy( &contents[offset], buffer, size );
+        logDebug( "contents: \'%s\'", contents );
+    }
 
     return size;
 }
