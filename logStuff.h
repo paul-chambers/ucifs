@@ -53,6 +53,9 @@ void    setLogStuffDestination( eLogPriority priority, eLogDestination logDestin
 /* start/stop logging function entry & exit */
 void    logFunctionTrace( tBool onOff );
 
+/* output a block of textBlock as a series of log lines, each with a line number prefixed */
+void logTextBlock( eLogPriority priority, const char * textBlock, size_t textLen );
+
 /* private helper, which the preprocessor macros expand to. Please don't use directly! */
 void    _log( const char * inFile,
               unsigned int atLine,

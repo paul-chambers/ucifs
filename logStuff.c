@@ -155,6 +155,67 @@ void _log( const char *inPath,
     }
 }
 
+void logTextBlock( eLogPriority priority, const char * textBlock, size_t textLen )
+{
+    unsigned int counter;
+    char line[4096];
+
+    const char * textEnd = &textBlock[textLen];
+    if ( textLen == 0 )
+    {
+        textEnd = &textBlock[32767];
+    }
+
+    const char * t   = textBlock;
+          char * dst = line;
+
+    counter = 1;
+    tBool newline = 1;
+    while ( *t != '\0' && t < textEnd  )
+    {
+        if (newline)
+        {
+            newline = 0;
+
+            int len = snprintf( line, sizeof( line ), "%3u: ", counter++ );
+            if ( len > 0 )
+            {
+                dst = &line[len];
+            }
+        }
+
+        switch ( *t )
+        {
+        case '\n':
+        case '\r':
+            newline = 1;
+            do { ++t; } while ( *t == '\n' || *t == '\r' );
+            break;
+
+        case '\t':
+            {
+                unsigned int pos = dst - &line[5];
+                while ( (++pos % 8) != 0 )
+                {
+                    *dst++ = ' ';
+                }
+            }
+            ++t;
+            break;
+
+        default:
+            *dst++ = *t++;
+            break;
+        }
+
+        if ( newline || *t == '\0' )
+        {
+            *dst = '\0';
+            ( gLogOutputFP[gLogSetting[priority].destination] )( priority, line );
+        }
+    }
+}
+
 void initLogStuff( const char * name )
 {
     gMyName = "<not set>";
