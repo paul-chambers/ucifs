@@ -17,17 +17,19 @@
 /* need to build and install the uci project on x86 */
 #include <uci.h>
 
+#include <elektra.h>
+
 #include "uci2libelektra.h"
 #include "logStuff.h"
 
 typedef struct sFileHandle {
-    tFileHandle *        next;
-    struct stat          st;
-    const char *         path;
-    tHash                pathHash;
-    char *               contents;
-    int                  buildCount;     // for 'mark/sweep' GC. will be set equal to buildCounter during a populateRoot.
-    tBool                dirty;
+    tFileHandle *       next;
+    struct stat         st;
+    const char *        path;
+    tHash               pathHash;
+    char *              contents;
+    int                 buildCount;     // for 'mark/sweep' GC. will be set equal to buildCounter during a populateRoot.
+    tBool               dirty;
 } tFileHandle;
 
 typedef struct sMountPoint {
@@ -36,6 +38,13 @@ typedef struct sMountPoint {
     struct sFileHandle * rootFiles;
     struct stat          rootStat;
 } tMountPoint;
+
+typedef struct sSection {
+    struct sSection *   next;
+    tHash               hash;
+    int                 count;
+    int                 counter;
+} tSection;
 
 #ifdef DEBUG
 const char * testPaths[] = { "/network", "/system", "/wireless", "/dhcp", NULL };
@@ -211,6 +220,7 @@ tFileHandle * getFH( tFileHandle * fh, const char * path )
     return fh;
 }
 
+
 tFileHandle * nextFH( tFileHandle * fh )
 {
     if ( fh != NULL )
@@ -225,15 +235,18 @@ tFileHandle * nextFH( tFileHandle * fh )
     return fh;
 }
 
+
 const char * getFHpath( tFileHandle * fh )
 {
     return fh->path;
 }
 
+
 struct stat * getFHstat( tFileHandle * fh )
 {
     return &fh->st;
 }
+
 
 ssize_t readFH( tFileHandle * fh, char *buffer, size_t size, off_t offset)
 {
@@ -259,6 +272,7 @@ ssize_t readFH( tFileHandle * fh, char *buffer, size_t size, off_t offset)
 
     return length;
 }
+
 
 ssize_t writeFH( tFileHandle * fh, const char *buffer, size_t size, off_t offset )
 {
@@ -293,6 +307,7 @@ ssize_t writeFH( tFileHandle * fh, const char *buffer, size_t size, off_t offset
     return (ssize_t)size;
 }
 
+
 int truncateFH( tFileHandle * fh, off_t offset )
 {
     fh->st.st_mtime = time(NULL); // The last "m"odification of the contents of the file
@@ -322,6 +337,7 @@ int truncateFH( tFileHandle * fh, off_t offset )
     }
     return 0;
 }
+
 
 int populateFH( tFileHandle * fh )
 {
@@ -354,6 +370,161 @@ int populateFH( tFileHandle * fh )
     return result;
 }
 
+char * storeSection( char * key, const struct uci_section * section )
+{
+    /* ToDo: establish the section (i.e. check it exists, create it if not) */
+    logDebug( "establish section \'%s\'", key );
+
+    /* ToDo: set section->type as metadata on the section  */
+    logDebug( "set section \'%s\' to type \'%s\'", key, section->type );
+
+    struct uci_element * optionElement;
+    uci_foreach_element( &section->options, optionElement )
+    {
+        struct uci_option * option = uci_to_option( optionElement );
+        switch ( option->type )
+        {
+        case UCI_TYPE_STRING:
+            key = appendKey( key, option->e.name );
+
+            logDebug( "%s = \'%s\'", key, option->v.string );
+            /* ToDo: write to libelektra */
+            break;
+
+        case UCI_TYPE_LIST:
+            key = appendKey( key, option->e.name );
+            {
+                int index = 0;
+                char indexStr[32];
+
+                struct uci_element * listElement;
+                uci_foreach_element( &option->v.list, listElement )
+                {
+                    snprintf( indexStr, sizeof(indexStr), "#%03d", index++ );
+                    key = appendKey( key, indexStr );
+                    logDebug( "%s = '%s'", key, listElement->name );
+                    /* ToDo: write to libelektra */
+                    key = trimKey( key );
+                }
+            }
+            break;
+
+        default:
+            key = appendKey( key, "<error>" );
+            logError( "option '%s' has an unknown type (%d)",
+                      option->e.name,
+                      option->type );
+            break;
+        }
+        key = trimKey( key );
+    }
+    return key;
+}
+
+/* ToDo: convert the UCI structures into libelektra ones, and store them */
+void uci2elektra( const struct uci_context * ctx )
+{
+    char * key = strdup( "system:/config" );
+    struct uci_element * element;
+    tSection * anonSections = NULL;
+
+    /* ToDo: establish the config root in libelektra (i.e. check it exists, create it if not) */
+    logDebug( "establish config root node \'%s\'", key );
+
+    uci_foreach_element( &ctx->root, element )
+    {
+        struct uci_package * packageElement = uci_to_package( element );
+        struct uci_element * sectionElement;
+
+        key = appendKey( key, packageElement->e.name );
+        /* ToDo: establish the package (i.e. check it exists, create it if not) */
+        logDebug( "establish package \'%s\'", key );
+
+        /* Scan the list of sections, looking for anonymous ones */
+        uci_foreach_element( &packageElement->sections, sectionElement )
+        {
+            struct uci_section * section = uci_to_section( sectionElement );
+            if ( section->anonymous ) {
+                /* if it's anonymous, then it does not have a unique name, only a type.
+                 * so we pre-scan the list of sections to build a list of the types of
+                 * anonymous sections, so that we can use the type plus an index as the
+                 * key to store the options in that section underneath */
+                tSection * s;
+                tHash typeHash = hashString( section->type );
+                logDebug( "anonymous section type: \'%s\' (0x%lx)", section->type, typeHash );
+                for ( s = anonSections; s != NULL; s = s->next  )
+                {
+                    if ( s->hash == typeHash )
+                    {
+                        /* found it, so bump up the count */
+                        s->count++;
+                        break;
+                    }
+                }
+                if ( s == NULL )
+                {
+                    /* first time we've seen this section type, so add it to the list */
+                    s = calloc( 1, sizeof( tSection ) );
+                    if ( s != NULL )
+                    {
+                        s->hash  = typeHash;
+                        s->count = 1;
+                        s->next  = anonSections;
+                        anonSections = s;
+                    }
+                }
+            }
+        }
+#ifdef DEBUG
+        for ( tSection * s = anonSections; s != NULL; s = s->next  )
+        {
+            logDebug( "anon section: 0x%lx %d", s->hash, s->count );
+        }
+#endif
+
+        uci_foreach_element( &packageElement->sections, sectionElement )
+        {
+            struct uci_section * section = uci_to_section( sectionElement );
+
+            if ( section->anonymous ) {
+                logDebug( "section type: \'%s\'", section->type );
+                key = appendKey( key, section->type);
+                tHash typeHash = hashString( section->type );
+                for ( tSection * s = anonSections; s != NULL; s = s->next  )
+                {
+                    if ( s->hash == typeHash )
+                    {
+                        char indexStr[32];
+                        snprintf( indexStr, sizeof(indexStr), "#%03d", s->counter++ );
+                        key = appendKey( key, indexStr );
+
+                        key = storeSection( key, section );
+
+                        key = trimKey( key );
+                        break;
+                    }
+                }
+            } else {
+                logDebug( "section type: \'%s\' name: \'%s\'", section->type, section->e.name );
+                key = appendKey( key, section->e.name);
+
+                key = storeSection( key, section );
+            }
+            key = trimKey( key );
+        }
+        key = trimKey( key );
+    }
+
+    /* clean up the anonSection list */
+    for ( tSection * s = anonSections; s != NULL; )
+    {
+        tSection * next = s->next;
+        free( s );
+        s = next;
+    }
+}
+
+
 int parseFH( tFileHandle * fh )
 {
     int result = -EINVAL;
@@ -370,7 +541,7 @@ int parseFH( tFileHandle * fh )
                 /* use libuci to parse the contents into UCI structures */
                 struct uci_context * ctx = uci_alloc_context();
 
-                if ( ctx !- NULL )
+                if ( ctx != NULL )
                 {
                     const char *name = fh->path;
                     if (*name == '/') ++name;
@@ -382,82 +553,15 @@ int parseFH( tFileHandle * fh )
                     if ( result != 0 )
                     {
                         char * errStr;
-                        uci_get_errorstr( ctx, &errStr, "");
+                        uci_get_errorstr( ctx, &errStr, "" );
                         logError( " problem importing %s: %s", name, errStr );
                     }
                     else
                     {
-                        /* ToDo: convert the UCI structures into libelektra ones, and store them */
-                        char * key = strdup( "system:/config" );
-                        struct uci_element * element;
-
-                        uci_foreach_element( &ctx->root, element )
-                        {
-                            struct uci_package * packageElement = uci_to_package( element );
-                            struct uci_element * sectionElement;
-
-                            logDebug( "package: %s", packageElement->e.name );
-                            key = appendKey( key, packageElement->e.name );
-                            uci_foreach_element( &packageElement->sections, sectionElement )
-                            {
-                                struct uci_section * section = uci_to_section( sectionElement );
-                                char * p;
-                                if ( section->anonymous )
-                                {
-                                    p = "anonymous";
-                                } else
-                                {
-                                    p = section->e.name;
-                                }
-                                logDebug( "section type: \'%s\' name: \'%s\'", section->type, p );
-                                key = appendKey( key, p );
-
-                                struct uci_element * optionElement;
-                                uci_foreach_element( &section->options, optionElement )
-                                {
-                                    struct uci_option * option = uci_to_option( optionElement );
-                                    switch ( option->type )
-                                    {
-                                    case UCI_TYPE_STRING:
-                                        key = appendKey( key, option->e.name );
-
-                                        logDebug( "%s = \'%s\'", key, option->v.string );
-                                        break;
-
-                                    case UCI_TYPE_LIST:
-                                        key = appendKey( key, option->e.name );
-                                        {
-                                            key = realloc( key, strlen( key ) + 21 );
-                                            char * tail = &key[strlen( key )];
-
-                                            int index = 0;
-
-                                            struct uci_element * listElement;
-                                            uci_foreach_element( &option->v.list, listElement )
-                                            {
-                                                snprintf( tail, 20, "/#%03d", index++ );
-                                                logDebug( "%s = '%s'", key, listElement->name );
-                                            }
-                                            *tail = '\0';
-                                        }
-                                        break;
-
-                                    default:
-                                        key = appendKey( key, "<error>" );
-                                        logError( "option '%s' has an unknown type (%d)",
-                                                  option->e.name,
-                                                  option->type );
-                                        break;
-                                    }
-                                    key = trimKey( key );
-                                }
-                                key = trimKey( key );
-                            }
-                            key = trimKey( key );
-                        }
+                        uci2elektra( ctx );
                     }
+                    uci_free_context(ctx);
                 }
-                uci_free_context(ctx);
             }
 
             fh->dirty = 0;
@@ -475,6 +579,7 @@ int parseFH( tFileHandle * fh )
 
     return result;
 }
+
 
 
 void releaseFH( tFileHandle * fh )
