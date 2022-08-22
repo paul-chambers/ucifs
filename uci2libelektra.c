@@ -98,8 +98,10 @@ tFileHandle * newFH( const char * path, int mode )
 {
     tFileHandle * result = NULL;
 
-    if ( path != NULL )
+    if ( path != NULL && *path != '\0' )
     {
+        logDebug( "new fh for \'%s\'", path );
+
         result = calloc( 1, sizeof( tFileHandle ) );
         if ( result != NULL )
         {
@@ -165,20 +167,21 @@ tFileHandle * findFH( const char * path )
     tFileHandle * result = NULL;
 
     tMountPoint * mountPoint = getMountPoint();
-    if ( mountPoint != NULL )
+    if ( mountPoint != NULL)
     {
-        tHash hash = hashString( path );
+        /* make sure the root cache is populated & up-to-date */
+        populateRoot( mountPoint );
 
-        result = mountPoint->rootFiles;
-        while ( result != NULL )
+        tHash hash = hashString( path );
+        for ( result = mountPoint->rootFiles; result != NULL; result = result->next )
         {
             if ( hash == result->pathHash )
-                break; /* found an existing matching entry, so exit loop prematurely */
-
-            result = result->next;
+            {
+                /* found an existing matching entry, so exit loop prematurely */
+                break;
+            }
         }
     }
-
     return result;
 }
 
@@ -280,13 +283,13 @@ ssize_t writeFH( tFileHandle * fh, const char *buffer, size_t size, off_t offset
     char * contents = fh->contents;
     if ( contents == NULL )
     {
-        logDebug( " calloc" );
+        logDebug( "  calloc %ld bytes", end );
         contents = calloc( end, sizeof(byte) );
         fh->st.st_size = end;
     }
     else if ( end > fh->st.st_size)
     {
-        logDebug( " realloc" );
+        logDebug( "  realloc to %ld bytes", end );
         contents = realloc( contents, end );
         fh->st.st_size = end;
     }
@@ -298,7 +301,7 @@ ssize_t writeFH( tFileHandle * fh, const char *buffer, size_t size, off_t offset
     }
     else
     {
-        fh->contents = contents; // in case realloc() moved the block, or calloc() was called.
+        fh->contents = contents; // in case realloc() moved the block, or it's newly calloc'd.
         fh->st.st_mtime = time(NULL); // The last "m"odification of the contents of the file/directory
         fh->dirty = 1;
         memcpy( &contents[offset], buffer, size );
@@ -333,7 +336,7 @@ int truncateFH( tFileHandle * fh, off_t offset )
         fh->st.st_size = offset;
     }
     else {
-        logError( "attempting to truncate using a negative offset: %ld", offset );
+        logError( "attempted to truncate using a negative offset: %ld", offset );
     }
     return 0;
 }
@@ -354,7 +357,7 @@ int populateFH( tFileHandle * fh )
             fh->st.st_size = 0;
         }
 
-        /* until we wire up LibElekta, set the contents to something */
+        /* ToDo: until we wire up LibElekta, set the contents to something */
         int len = asprintf( (char **)&fh->contents, "Placeholder for %s\n", fh->path );
         if ( len < 0 )
         {
@@ -372,7 +375,7 @@ int populateFH( tFileHandle * fh )
 
 char * storeSection( char * key, const struct uci_section * section )
 {
-    /* ToDo: establish the section (i.e. check it exists, create it if not) */
+    /* ToDo: establish the section in libelektra (i.e. check it exists, create it if not) */
     logDebug( "establish section \'%s\'", key );
 
     /* ToDo: set section->type as metadata on the section  */
@@ -392,8 +395,10 @@ char * storeSection( char * key, const struct uci_section * section )
             break;
 
         case UCI_TYPE_LIST:
-            key = appendKey( key, option->e.name );
             {
+                key = appendKey( key, option->e.name );
+                logDebug( "establish list \'%s\'", key );
+
                 int index = 0;
                 char indexStr[32];
 
@@ -421,7 +426,7 @@ char * storeSection( char * key, const struct uci_section * section )
     return key;
 }
 
-/* ToDo: convert the UCI structures into libelektra ones, and store them */
+/* ToDo: mirror the imported UCI structures into libelektra */
 void uci2elektra( const struct uci_context * ctx )
 {
     char * key = strdup( "system:/config" );
@@ -445,10 +450,8 @@ void uci2elektra( const struct uci_context * ctx )
         {
             struct uci_section * section = uci_to_section( sectionElement );
             if ( section->anonymous ) {
-                /* if it's anonymous, then it does not have a unique name, only a type.
-                 * so we pre-scan the list of sections to build a list of the types of
-                 * anonymous sections, so that we can use the type plus an index as the
-                 * key to store the options in that section underneath */
+                /* if it's anonymous, then it does not have a unique name, only a type. So we pre-scan the
+                 * list of sections to build a list of the types of anonymous sections, */
                 tSection * s;
                 tHash typeHash = hashString( section->type );
                 logDebug( "anonymous section type: \'%s\' (0x%lx)", section->type, typeHash );
@@ -487,6 +490,9 @@ void uci2elektra( const struct uci_context * ctx )
             struct uci_section * section = uci_to_section( sectionElement );
 
             if ( section->anonymous ) {
+                /* now use the list of anonymous types we built earlier to generate keys of the
+                 * form /{type}/{index} so they are unique when multiple anonymous sections with
+                 * the same type can co-exist exist within the same package */
                 logDebug( "section type: \'%s\'", section->type );
                 key = appendKey( key, section->type);
                 tHash typeHash = hashString( section->type );
@@ -653,58 +659,42 @@ int populateRoot( tMountPoint * mountPoint )
      * exist with the new buildCount, and adding new ones */
     tFileHandle * fh;
     const char * path;
-    int i = 0;
-    do {
-        path = iterateUCIfiles( i );
-        if ( path != NULL )
+    int i;
+    for ( i = 0; (path = iterateUCIfiles( i )) != NULL; ++i )
+    {
+        fh = findFH( path );
+        if ( fh == NULL )
         {
-            tHash hash = hashString( path );
-            fh = mountPoint->rootFiles;
-            while ( fh != NULL)
+            // did not find a matching entry in the list, so create a new one and add it
+            fh = newFH( path, 0 );
+            if (fh != NULL)
             {
-                if ( hash == fh->pathHash )
-                    break; /* found an existing matching entry, so exit loop prematurely */
-
-                fh = fh->next;
+                /* fill in the contents */
+                populateFH( fh );
             }
-            if ( fh == NULL )
-            {
-                // did not find a matching entry in the list, so create a new one and add it
-                logDebug( "new fh for \'%s\'", path );
-                fh = newFH( path, 0 );
-                if (fh != NULL)
-                {
-                    populateFH( fh );
-                }
-            }
-            if ( fh != NULL )
-            {
-                /* mark fh as 'seen' by updating the buildCount */
-                fh->buildCount = buildCount;
-            }
-            i++;
         }
-    } while ( path != NULL );
+        if ( fh != NULL )
+        {
+            /* mark fh as 'seen' by updating the buildCount */
+            fh->buildCount = buildCount;
+        }
+    }
 
     mountPoint->rootStat.st_nlink = i + 2; /* +2 to include '.' and '..' entries */
 
     /* now scan the list and remove anything that wasn't just marked with the new buildCount */
-    fh = mountPoint->rootFiles;
     tFileHandle ** prev = &mountPoint->rootFiles;
-    while ( fh != NULL )
+    for ( fh = mountPoint->rootFiles; fh != NULL; fh = *prev )
     {
-        if ( fh->buildCount == buildCount )
+        prev = &fh->next;
+        if ( fh->buildCount != buildCount )
         {
-            prev = &fh->next;
-        }
-        else {
             /* a stale buildCount value means it's a 'dead' entry - i.e. a LibElektra entry that
              * is no longer being returned by iterateUCIfiles(). So unlink and dispose of it */
             logDebug( "remove \'%s\'", fh->path );
             *prev = fh->next;
             releaseFH( fh );
         }
-        fh = *prev;
     }
 
     return result;
@@ -744,6 +734,8 @@ int getDirAttributes( tMountPoint * mountPoint, struct stat * st )
     return result;
 }
 
+/* Note: this is called really early, mountPoint can't be retrieved until _after_ this has returned */
+
 tMountPoint * initRoot( uid_t uid, gid_t gid )
 {
     tMountPoint * mountPoint = calloc( 1, sizeof( tMountPoint ));
@@ -752,8 +744,10 @@ tMountPoint * initRoot( uid_t uid, gid_t gid )
     {
         mountPoint->rootStat.st_uid = uid;
         mountPoint->rootStat.st_gid = gid;
-        /* pre-populate, so everything is ready to go */
-        populateRoot( mountPoint );
     }
+    else {
+        logError( " failed to allocate mountPoint structure" );
+    }
+
     return mountPoint;
 }

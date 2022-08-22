@@ -96,11 +96,12 @@ const char * createModeAsStr( unsigned int mode )
 tMountPoint * getMountPoint( void )
 {
     struct fuse_context * fc = fuse_get_context();
-    if ( fc != NULL)
+    if ( fc == NULL || fc->private_data == NULL)
     {
-        return (tMountPoint *) fc->private_data;
+        logError( "unable to retrieve mountPoint structure" );
+        return NULL;
     }
-    return NULL;
+    return (tMountPoint *) fc->private_data;
 }
 
 void setUserGroup( struct stat * st )
@@ -145,9 +146,12 @@ static void * doInit( struct fuse_conn_info * conn,
 {
     (void)conn;
 
-    logDebug( "init" );
+    logDebug( "### op: init" );
 
-    return initRoot( cfg->uid, cfg->gid );
+    void * result = (void *)initRoot( cfg->uid, cfg->gid );
+    logDebug( "mountPoint %p", result );
+
+    return result;
 }
 
 /**
@@ -157,7 +161,7 @@ static void * doInit( struct fuse_conn_info * conn,
  */
 static void doDestroy( void * private_data )
 {
-    errno = 0; logDebug( "destroy" );
+    errno = 0; logDebug( "### op: destroy" );
 
     if ( private_data != NULL )
     {
@@ -182,7 +186,7 @@ static int doGetAttr( const char * path,
 {
     int result = -ENOENT;
 
-    logDebug( "getattr \'%s\' [%p]", path, fi );
+    logDebug( "### op: getattr \'%s\' [%p]", path, fi );
 
     if ( isDirectory( path ) )
     {
@@ -259,7 +263,7 @@ static int doReadDir( const char * path,
 {
     (void)offset; (void)fi; (void)flags;
 
-    logDebug( "readdir \'%s\' [%p]", path, fi );
+    logDebug( "### op: readdir \'%s\' [%p]", path, fi );
 
     int result = -EINVAL;
 
@@ -339,7 +343,7 @@ int doReleaseDir( const char * path, struct fuse_file_info * fi )
 
 static int doOpen( const char * path, struct fuse_file_info * fi )
 {
-    logDebug( "open \'%s\' %s [%p]", path, openFlagsAsStr(fi->flags), fi );
+    logDebug( "### op: open \'%s\' %s [%p]", path, openFlagsAsStr(fi->flags), fi );
 
     int result = 0;
 
@@ -372,7 +376,7 @@ static int doOpen( const char * path, struct fuse_file_info * fi )
 static int doCreate(const char * path, mode_t mode, struct fuse_file_info * fi)
 {
     int result = 0;
-    logDebug( "create \'%s\' (0x%x) %s [%p]", path, mode, createModeAsStr(mode), fi );
+    logDebug( "### op: create \'%s\' (0x%x) %s [%p]", path, mode, createModeAsStr(mode), fi );
 
     tFileHandle * fh = findFH( path );
     /* we are not expecting to find a match, i.e. fh will be NULL */
@@ -402,7 +406,7 @@ int doTruncate(const char * path, off_t offset, struct fuse_file_info * fi)
 {
     int result = 0;
 
-    logDebug( "create \'%s\' @%lu [%p]", path, offset, fi );
+    logDebug( "### op: truncate \'%s\' @%lu [%p]", path, offset, fi );
 
     tFileHandle * fh = fetchFH( fi, path );
     if (fh == NULL)
@@ -430,7 +434,7 @@ static int doRelease( const char * path, struct fuse_file_info * fi )
 {
     int result = 0;
 
-    logDebug( "release \'%s\' [%p]", path, fi );
+    logDebug( "### op: release \'%s\' [%p]", path, fi );
 
     tFileHandle * fh = fetchFH( fi, path );
     if ( fh == NULL )
@@ -459,7 +463,7 @@ static int doRead( const char *path,
 {
     (void)fi;
 
-    logDebug( "read \'%s\' @%lu (%lu) [%p]\n", path, offset, size, fi );
+    logDebug( "### op: read \'%s\' @%lu (%lu) [%p]\n", path, offset, size, fi );
 
     ssize_t length = size;
 
@@ -490,7 +494,7 @@ static int doWrite( const char * path,
 {
     (void)buffer;
 
-    logDebug( "write %s @%lu (%lu) [%p]", path, offset, size, fi );
+    logDebug( "### op: write %s @%lu (%lu) [%p]", path, offset, size, fi );
 
     tFileHandle * fh = fetchFH( fi, path );
     if ( fh == NULL )
@@ -523,7 +527,7 @@ static int doWrite( const char * path,
  */
 int doReadLink( const char * path, char *, size_t )
 {
-    logDebug( "--- %s \'%s\'", __func__, path );
+    logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
@@ -534,7 +538,7 @@ int doReadLink( const char * path, char *, size_t )
  */
 int doMkNod( const char * path, mode_t mode, dev_t dev )
 {
-	logDebug( "--- %s \'%s\'", __func__, path);
+	logDebug( "--- nop: %s \'%s\'", __func__, path);
 	return -ENOSYS;
 }
 
@@ -545,28 +549,28 @@ int doMkNod( const char * path, mode_t mode, dev_t dev )
  */
 int doMkDir( const char * path, mode_t mode )
 {
-	logDebug( "--- %s \'%s\'", __func__, path );
+	logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
 /** Remove a file */
 int doUnlink( const char * path )
 {
-	logDebug( "--- %s \'%s\'", __func__, path );
+	logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
 /** Remove a directory */
 int doRmDir( const char * path )
 {
-	logDebug( "--- %s \'%s\'", __func__, path );
+	logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
 /** Create a symbolic link */
 int doSymlink( const char * path, const char * )
 {
-	logDebug( "--- %s \'%s\'", __func__, path );
+	logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
@@ -579,14 +583,14 @@ int doSymlink( const char * path, const char * )
  */
 int doRename( const char * path, const char *, unsigned int flags )
 {
-	logDebug( "--- %s \'%s\'", __func__, path );
+	logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
 /** Create a hard link to a file */
 int doLink( const char * path, const char * )
 {
-	logDebug( "--- %s \'%s\'", __func__, path );
+	logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
@@ -596,7 +600,7 @@ int doLink( const char * path, const char * )
  */
 int doChMod( const char * path, mode_t mode, struct fuse_file_info * fi )
 {
-	logDebug( "--- %s \'%s\'", __func__, path );
+	logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
@@ -608,7 +612,7 @@ int doChMod( const char * path, mode_t mode, struct fuse_file_info * fi )
  */
 int doChOwn( const char * path, uid_t uid, gid_t gid, struct fuse_file_info *fi )
 {
-	logDebug( "--- %s \'%s\'", __func__, path );
+	logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
@@ -618,7 +622,7 @@ int doChOwn( const char * path, uid_t uid, gid_t gid, struct fuse_file_info *fi 
  */
 int doStatFS( const char * path, struct statvfs * )
 {
-	logDebug( "--- %s \'%s\'", __func__, path );
+	logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
@@ -647,7 +651,7 @@ int doStatFS( const char * path, struct statvfs * )
  */
 int doFlush( const char * path, struct fuse_file_info * fi )
 {
-	logDebug( "--- %s \'%s\'", __func__, path );
+	logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
@@ -657,35 +661,35 @@ int doFlush( const char * path, struct fuse_file_info * fi )
  */
 int doFSync( const char * path, int, struct fuse_file_info * fi)
 {
-	logDebug( "--- %s \'%s\'", __func__, path );
+	logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
 /** Set extended attributes */
 int doSetXAttr( const char * path, const char *, const char *, size_t, int )
 {
-	logDebug( "--- %s \'%s\'", __func__, path );
+	logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
 /** Get extended attributes */
 int doGetXAttr( const char * path, const char *, char *, size_t )
 {
-	logDebug( "--- %s \'%s\'", __func__, path );
+	logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
 /** List extended attributes */
 int doListXAttr( const char * path, char *, size_t )
 {
-	logDebug( "--- %s \'%s\'", __func__, path );
+	logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
 /** Remove extended attributes */
 int doRemoveXAttr( const char * path, const char * )
 {
-	logDebug( "--- %s \'%s\'", __func__, path );
+	logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
@@ -695,7 +699,7 @@ int doRemoveXAttr( const char * path, const char * )
  */
 int doFSyncDir( const char * path, int, struct fuse_file_info * fi )
 {
-	logDebug( "--- %s \'%s\'", __func__, path );
+	logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
@@ -709,7 +713,7 @@ int doFSyncDir( const char * path, int, struct fuse_file_info * fi )
 **/
 int doAccess( const char * path, int )
 {
-	logDebug( "--- %s \'%s\'", __func__, path );
+	logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
@@ -744,7 +748,7 @@ int doLock( const char * path,
             int cmd,
             struct flock * )
 {
-    logDebug( "--- %s \'%s\'", __func__, path );
+    logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
@@ -760,7 +764,7 @@ int doLock( const char * path,
  */
 int doUtimeNS( const char * path, const struct timespec tv[2], struct fuse_file_info * fi )
 {
-    logDebug( "--- %s \'%s\'", __func__, path );
+    logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
@@ -772,7 +776,7 @@ int doUtimeNS( const char * path, const struct timespec tv[2], struct fuse_file_
  */
 int doBMap( const char * path, size_t blocksize, uint64_t * idx )
 {
-	logDebug( "--- %s \'%s\'", __func__, path );
+	logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
@@ -796,7 +800,7 @@ int doIoctl( const char * path,
              unsigned int flags,
              void *data )
 {
-    logDebug( "--- %s \'%s\'", __func__, path );
+    logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
@@ -818,7 +822,7 @@ int doPoll( const char * path,
             struct fuse_pollhandle * ph,
             unsigned * reventsp )
 {
-    logDebug( "--- %s \'%s\'", __func__, path );
+    logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
@@ -866,7 +870,7 @@ int doFLock( const char * path,
              struct fuse_file_info * fi,
              int op )
 {
-    logDebug( "--- %s \'%s\'", __func__, path );
+    logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
@@ -883,7 +887,7 @@ int doFAllocate( const char * path,
                  off_t ,
                  struct fuse_file_info * fi )
 {
-    logDebug( "--- %s \'%s\'", __func__, path );
+    logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
@@ -907,7 +911,7 @@ ssize_t doCopyFileRange( const char * path_in,
                          size_t size,
                          int flags )
 {
-    logDebug( "--- %s \'%s\'", __func__, path_in );
+    logDebug( "--- nop: %s \'%s\'", __func__, path_in );
 	return (ssize_t)-ENOSYS;
 }
 
@@ -916,7 +920,7 @@ ssize_t doCopyFileRange( const char * path_in,
  */
 off_t doLSeek( const char * path, off_t offset, int whence, struct fuse_file_info * fi )
 {
-	logDebug( "--- %s \'%s\'", __func__, path );
+	logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return (off_t)-ENOSYS;
 }
 
