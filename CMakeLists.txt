@@ -18,7 +18,7 @@ else (ELEKTRA_FOUND)
     message (FATAL_ERROR "Elektra not found")
 endif (ELEKTRA_FOUND)
 
-add_executable(ucifs ucifs.c logStuff.c logStuff.h uci2libelektra.c uci2libelektra.h)
+add_executable(ucifs ucifs.c logStuff.c logStuff.h uci2libelektra.c uci2libelektra.h fileHandles.c fileHandles.h utils.c utils.h ucifs.h)
 
 target_link_libraries(ucifs fuse3 uci ${ELEKTRA_LIBRARIES})
 

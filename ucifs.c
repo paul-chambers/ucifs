@@ -15,105 +15,22 @@
 
 #define FUSE_USE_VERSION 35
 #include <fuse3/fuse.h>
-
 /* do this explicitly, as builds on x86-64 define it as zero */
 #undef  O_LARGEFILE
 #define O_LARGEFILE 0x00008000
 
-#include "uci2libelektra.h"
+#include "utils.h"
 #include "logStuff.h"
+#include "fileHandles.h"
+#include "uci2libelektra.h"
 
-char * appendStr( char * p, long remaining, const char * flagName )
-{
-    const char * src = flagName;
-    *p++ = ',';
-    --remaining;
 
-    while ( *src != '\0' && remaining > 1)
-    {
-        *p++ = *src++;
-        --remaining;
-    }
-    *p = '\0';
-
-    return p;
-}
-
-const char * openFlagsAsStr( int flags )
-{
-    static char temp[1024];
-    temp[0] = '\0';
-    temp[1] = '\0';
-    char * p = temp;
-    char * end = &temp[sizeof(temp)];
-
-    switch ( flags & O_ACCMODE )
-    {
-    case O_RDONLY: p = appendStr( p, end - p, "RdOnly" ); break;
-    case O_WRONLY: p = appendStr( p, end - p, "WrOnly" ); break;
-    case O_RDWR:   p = appendStr( p, end - p, "RdWr"   ); break;
-    }
-    if ( flags & O_CREAT     /* 0x000040 */ )  p = appendStr( p, end - p, "Create" );
-    if ( flags & O_EXCL      /* 0x000080 */ )  p = appendStr( p, end - p, "Excl" );
-    if ( flags & O_NOCTTY    /* 0x000100 */ )  p = appendStr( p, end - p, "NoCTTY" );
-    if ( flags & O_TRUNC     /* 0x000200 */ )  p = appendStr( p, end - p, "Trunc" );
-    if ( flags & O_APPEND    /* 0x000400 */ )  p = appendStr( p, end - p, "Append" );
-    if ( flags & O_NONBLOCK  /* 0x000800 */ )  p = appendStr( p, end - p, "NonBlock" );
-    if ( flags & O_DSYNC     /* 0x001000 */ )  p = appendStr( p, end - p, "DSync" );
-    if ( flags & O_ASYNC     /* 0x002000 */ )  p = appendStr( p, end - p, "ASync" );
-    if ( flags & O_DIRECT    /* 0x004000 */ )  p = appendStr( p, end - p, "Direct" );
-    if ( flags & O_LARGEFILE /* 0x008000 */ )  p = appendStr( p, end - p, "LargeFile" );
-    if ( flags & O_DIRECTORY /* 0x010000 */ )  p = appendStr( p, end - p, "Directory" );
-    if ( flags & O_NOFOLLOW  /* 0x020000 */ )  p = appendStr( p, end - p, "NoFollow" );
-    if ( flags & O_NOATIME   /* 0x040000 */ )  p = appendStr( p, end - p, "NoAtime" );
-    if ( flags & O_CLOEXEC   /* 0x080000 */ )  p = appendStr( p, end - p, "CloExec" );
-    if ( flags & O_PATH      /* 0x200000 */ )  p = appendStr( p, end - p, "Path" );
-    if ( flags & O_TMPFILE   /* 0x400000 */ )  p = appendStr( p, end - p, "TmpFile" );
-
-    return &temp[1];
-}
-
-const char * createModeAsStr( unsigned int mode )
-{
-    static char temp[10];
-
-    memset( temp, '-', 9 );
-    temp[9] = '\0';
-
-    if ( mode & S_IRUSR ) temp[0] = 'r';
-    if ( mode & S_IWUSR ) temp[1] = 'w';
-    if ( mode & S_IXUSR ) temp[2] = 'x';
-    if ( mode & S_IRGRP ) temp[3] = 'r';
-    if ( mode & S_IWGRP ) temp[4] = 'w';
-    if ( mode & S_IXGRP ) temp[5] = 'x';
-    if ( mode & S_IROTH ) temp[6] = 'r';
-    if ( mode & S_IWOTH ) temp[7] = 'w';
-    if ( mode & S_IXOTH ) temp[8] = 'x';
-
-    return temp;
-}
-
-tMountPoint * getMountPoint( void )
-{
-    struct fuse_context * fc = fuse_get_context();
-    if ( fc == NULL || fc->private_data == NULL)
-    {
-        logError( "unable to retrieve mountPoint structure" );
-        return NULL;
-    }
-    return (tMountPoint *) fc->private_data;
-}
-
-void setUserGroup( struct stat * st )
-{
-    struct fuse_context * fc = fuse_get_context();
-    if ( fc != NULL)
-    {
-        st->st_uid = fc->uid;
-        st->st_gid = fc->gid;
-    }
-}
-
+/**
+ * @brief
+ * @param fi
+ * @param path
+ * @return
+ */
 tFileHandle * fetchFH(  struct fuse_file_info * fi, const char * path )
 {
     tFileHandle * result = NULL;
@@ -135,7 +52,37 @@ tFileHandle * fetchFH(  struct fuse_file_info * fi, const char * path )
 }
 
 /**
- * Initialize filesystem
+ * @brief
+ * @return
+ */
+void * getPrivateData( void )
+{
+    struct fuse_context * fc = fuse_get_context();
+    if ( fc == NULL || fc->private_data == NULL)
+    {
+        logError( "unable to retrieve private data from fuse context" );
+        return NULL;
+    }
+    return fc->private_data;
+}
+
+/**
+ * @brief
+ * @param st
+ */
+void setUserGroup( struct stat * st )
+{
+    struct fuse_context * fc = fuse_get_context();
+    if ( fc != NULL)
+    {
+        st->st_uid = fc->uid;
+        st->st_gid = fc->gid;
+    }
+}
+
+
+/**
+ * @brief Initialize filesystem
  *
  * The return value will passed in the `private_data` field of `struct fuse_context`
  * to all file operations, and as a parameter to the destroy() method. It overrides
@@ -155,7 +102,7 @@ static void * doInit( struct fuse_conn_info * conn,
 }
 
 /**
- * Clean up filesystem
+ * @brief Clean up filesystem
  *
  * Called on filesystem exit.
  */
@@ -171,7 +118,7 @@ static void doDestroy( void * private_data )
 
 
 /**
- * Get file attributes.
+ * @brief Get file attributes.
  *
  * Similar to stat().  The 'st_dev' and 'st_blksize' fields are ignored. The 'st_ino' field is
  * ignored except if the 'use_ino' mount option is given. In that case it is passed to userspace,
@@ -190,7 +137,7 @@ static int doGetAttr( const char * path,
 
     if ( isDirectory( path ) )
     {
-        tMountPoint * mountPoint = getMountPoint();
+        tMountPoint * mountPoint = getPrivateData();
         if ( mountPoint != NULL )
         {
             result = getDirAttributes( mountPoint, st );
@@ -212,7 +159,8 @@ static int doGetAttr( const char * path,
  * * * * * * Directory Operations  * * * * *
  * * * * * * * * * * * * * * * * * * * * * */
 
-/** Open directory
+/**
+ * @brief Open directory
  *
  * Unless the 'default_permissions' mount option is given, this method should check
  * opendir is permitted for this directory. Optionally opendir may also return an
@@ -229,7 +177,7 @@ int doOpenDir( const char * path, struct fuse_file_info * fi )
 
     if ( path[0] == '/' && path[1] == '\0' )
     {
-        tMountPoint * mountPoint = getMountPoint();
+        tMountPoint * mountPoint = getPrivateData();
         if ( mountPoint != NULL )
         {
             /* ToDo: check permissions */
@@ -241,7 +189,7 @@ int doOpenDir( const char * path, struct fuse_file_info * fi )
 }
 
 /**
- * Read directory
+ * @brief Read directory
  *
  * The filesystem may choose between two modes of operation:
  *
@@ -291,7 +239,8 @@ static int doReadDir( const char * path,
     return result;
 }
 
-/** Release directory
+/**
+ * @brief Release a directory
  */
 int doReleaseDir( const char * path, struct fuse_file_info * fi )
 {
@@ -305,7 +254,7 @@ int doReleaseDir( const char * path, struct fuse_file_info * fi )
  * * * * * * * * * * * * * * * * * * * * * */
 
 /**
- * Open a file
+ * @brief Open a file
  *
  * Open flags are available in fi->flags. The following rules apply.
  *
@@ -366,7 +315,7 @@ static int doOpen( const char * path, struct fuse_file_info * fi )
 }
 
 /**
- * Create and open a file
+ * @brief Create and open a file
  *
  * If the file does not exist, first create it with the specified mode, and then open it.
  *
@@ -396,7 +345,8 @@ static int doCreate(const char * path, mode_t mode, struct fuse_file_info * fi)
     return result;
 }
 
-/** Change the size of a file
+/**
+ * @brief Change the size of a file
  *
  * `fi` will always be NULL if the file is not currently open, but may also be NULL if the file is open.
  *
@@ -418,7 +368,7 @@ int doTruncate(const char * path, off_t offset, struct fuse_file_info * fi)
 }
 
 /**
- * Release an open file
+ * @brief Release an open file
  *
  * Release is called when there are no more references to an open file: all file descriptors
  * are closed and all memory mappings are unmapped.
@@ -447,7 +397,7 @@ static int doRelease( const char * path, struct fuse_file_info * fi )
 }
 
 /**
- * Read data from an open file
+ * @brief Read data from an open file
  *
  * Read should return exactly the number of bytes requested except on EOF or error,
  * otherwise the rest of the data will be substituted with zeroes. An exception to
@@ -476,7 +426,8 @@ static int doRead( const char *path,
     return (int)length;
 }
 
-/** Write data to an open file
+/**
+ * @brief Write data to an open file
  *
  * Write should return exactly the number of bytes requested except on error.
  * An exception to this is when the 'direct_io' mount option is specified
@@ -510,16 +461,19 @@ static int doWrite( const char * path,
 #ifdef DEBUG
 
 /**
- *  stub implementations to log that an unimplemented entry point has been called.
- *  this is only done in debug builds. The libfuse source code returns -ENOSYS if
- *  the operation handler is NULL, so behave the same way
+ * the following stub implementations log that an unimplemented entry point has been called, with
+ * the purpose of making what fuse is invoking that we don't have full implementations for.
+ * This is only done in debug builds.
+ *
+ * The libfuse source code returns -ENOSYS if the operation handler is NULL, so behave the same way
 **/
 
 /* temporarily turn off the 'unused parameter' warning, since these are only stubs and that is expected */
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 
-/** Read the target of a symbolic link
+/**
+ * @brief Read the target of a symbolic link
  *
  * The buffer should be filled with a null terminated string. The buffer size argument
  * includes the space for the terminating null character. If the linkname is too long
@@ -531,7 +485,8 @@ int doReadLink( const char * path, char *, size_t )
 	return -ENOSYS;
 }
 
-/** Create a file node
+/**
+ * @brief  Create a file node
  *
  * This is called for creation of all non-directory, non-symlink nodes.  If the filesystem
  * defines a create() method, then for regular files that will be called instead.
@@ -542,7 +497,8 @@ int doMkNod( const char * path, mode_t mode, dev_t dev )
 	return -ENOSYS;
 }
 
-/** Create a directory
+/**
+ * @brief  Create a directory
  *
  * Note that the mode argument may not have the type specification bits set, i.e.
  * S_ISDIR(mode) can be false.  To obtain the correct directory type bits use mode|S_IFDIR
@@ -553,28 +509,30 @@ int doMkDir( const char * path, mode_t mode )
 	return -ENOSYS;
 }
 
-/** Remove a file */
+/**
+ * @brief  Remove a file
+ */
 int doUnlink( const char * path )
 {
 	logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
-/** Remove a directory */
+/**\n * @brief  Remove a directory */
 int doRmDir( const char * path )
 {
 	logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
-/** Create a symbolic link */
+/**\n * @brief  Create a symbolic link */
 int doSymlink( const char * path, const char * )
 {
 	logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
-/** Rename a file
+/**\n * @brief  Rename a file
  *
  * *flags* may be `RENAME_EXCHANGE` or `RENAME_NOREPLACE`. If RENAME_NOREPLACE is specified,
  * the filesystem must not overwrite *newname* if it exists and return an error instead. If
@@ -587,14 +545,14 @@ int doRename( const char * path, const char *, unsigned int flags )
 	return -ENOSYS;
 }
 
-/** Create a hard link to a file */
+/**\n * @brief  Create a hard link to a file */
 int doLink( const char * path, const char * )
 {
 	logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
-/** Change the permission bits of a file
+/**\n * @brief  Change the permission bits of a file
  *
  * `fi` will always be NULL if the file is not currently open, but may also be NULL if the file is open.
  */
@@ -604,7 +562,7 @@ int doChMod( const char * path, mode_t mode, struct fuse_file_info * fi )
 	return -ENOSYS;
 }
 
-/** Change the owner and group of a file
+/**\n * @brief  Change the owner and group of a file
  *
  * `fi` will always be NULL if the file is not currently open, but may also be NULL if the file is open.
  *
@@ -616,7 +574,7 @@ int doChOwn( const char * path, uid_t uid, gid_t gid, struct fuse_file_info *fi 
 	return -ENOSYS;
 }
 
-/** Get file system statistics
+/**\n * @brief  Get file system statistics
  *
  * The 'f_favail', 'f_fsid' and 'f_flag' fields are ignored
  */
@@ -626,7 +584,7 @@ int doStatFS( const char * path, struct statvfs * )
 	return -ENOSYS;
 }
 
-/** Possibly flush cached data
+/**\n * @brief  Possibly flush cached data
  *
  * BIG NOTE: This is not equivalent to fsync().  It's not a request to sync dirty data.
  *
@@ -655,7 +613,7 @@ int doFlush( const char * path, struct fuse_file_info * fi )
 	return -ENOSYS;
 }
 
-/** Synchronize file contents
+/**\n * @brief  Synchronize file contents
  *
  * If the datasync parameter is non-zero, then only the user data should be flushed, not the meta data.
  */
@@ -665,35 +623,35 @@ int doFSync( const char * path, int, struct fuse_file_info * fi)
 	return -ENOSYS;
 }
 
-/** Set extended attributes */
+/**\n * @brief  Set extended attributes */
 int doSetXAttr( const char * path, const char *, const char *, size_t, int )
 {
 	logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
-/** Get extended attributes */
+/**\n * @brief  Get extended attributes */
 int doGetXAttr( const char * path, const char *, char *, size_t )
 {
 	logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
-/** List extended attributes */
+/**\n * @brief  List extended attributes */
 int doListXAttr( const char * path, char *, size_t )
 {
 	logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
-/** Remove extended attributes */
+/**\n * @brief  Remove extended attributes */
 int doRemoveXAttr( const char * path, const char * )
 {
 	logDebug( "--- nop: %s \'%s\'", __func__, path );
 	return -ENOSYS;
 }
 
-/** Synchronize directory contents
+/**\n * @brief  Synchronize directory contents
  *
  * If the datasync parameter is non-zero, then only the user data should be flushed, not the meta data
  */
@@ -704,7 +662,7 @@ int doFSyncDir( const char * path, int, struct fuse_file_info * fi )
 }
 
 /**
- * Check file access permissions
+ * @brief Check file access permissions
  *
  * This will be called for the access() system call.  If the 'default_permissions' mount option is given,
  * this method is not called.
@@ -718,7 +676,7 @@ int doAccess( const char * path, int )
 }
 
 /**
- * Perform POSIX file locking operation
+ * @brief Perform POSIX file locking operation
  *
  * The cmd argument will be either F_GETLK, F_SETLK or F_SETLKW.
  *
@@ -753,7 +711,7 @@ int doLock( const char * path,
 }
 
 /**
- * Change the access and modification times of a file with nanosecond resolution
+ * @brief Change the access and modification times of a file with nanosecond resolution
  *
  * This supersedes the old utime() interface. New applications should use this.
  *
@@ -769,7 +727,7 @@ int doUtimeNS( const char * path, const struct timespec tv[2], struct fuse_file_
 }
 
 /**
- * Map block index within file to block index within device
+ * @brief Map block index within file to block index within device
  *
  * Note: This makes sense only for block device backed filesystems mounted
  * with the 'blkdev' option
@@ -781,7 +739,7 @@ int doBMap( const char * path, size_t blocksize, uint64_t * idx )
 }
 
 /**
- * Ioctl
+ * @brief Ioctl
  *
  * flags will have FUSE_IOCTL_COMPAT set for 32bit ioctls in 64bit environment.
  * The size and direction of data is determined by _IOC_*() decoding of cmd.
@@ -805,7 +763,7 @@ int doIoctl( const char * path,
 }
 
 /**
- * Poll for IO readiness events
+ * @brief Poll for IO readiness events
  *
  * Note: If ph is non-NULL, the client should notify when IO readiness events
  * occur by calling fuse_notify_poll() with the specified ph.
@@ -826,7 +784,7 @@ int doPoll( const char * path,
 	return -ENOSYS;
 }
 
-/** Write contents of buffer to an open file
+/**\n * @brief  Write contents of buffer to an open file
  *
  * Similar to the write() method, but data is supplied in a generic buffer. Use
  * fuse_buf_copy() to transfer data to the destination.
@@ -837,7 +795,7 @@ int doPoll( const char * path,
  * NOTE: not implemented, since fuse will fall back to doWrite()
  */
 
-/** Store data from an open file in a buffer
+/**\n * @brief  Store data from an open file in a buffer
  *
  * Similar to the read() method, but data is stored and returned in a generic buffer.
  *
@@ -852,7 +810,7 @@ int doPoll( const char * path,
  */
 
 /**
- * Perform BSD file locking operation
+ * @brief Perform BSD file locking operation
  *
  * The op argument will be either LOCK_SH, LOCK_EX or LOCK_UN
  *
@@ -875,7 +833,7 @@ int doFLock( const char * path,
 }
 
 /**
- * Allocates space for an open file
+ * @brief Allocates space for an open file
  *
  * This function ensures that required space is allocated for specified file. If
  * this function returns success then any subsequent write request to specified
@@ -892,7 +850,7 @@ int doFAllocate( const char * path,
 }
 
 /**
- * Copy a range of data from one file to another
+ * @brief Copy a range of data from one file to another
  *
  * Performs an optimized copy between two file descriptors without the additional
  * cost of transferring data through the FUSE kernel module to user space (glibc)
@@ -916,7 +874,7 @@ ssize_t doCopyFileRange( const char * path_in,
 }
 
 /**
- * Find next data or hole after the specified offset
+ * @brief Find next data or hole after the specified offset
  */
 off_t doLSeek( const char * path, off_t offset, int whence, struct fuse_file_info * fi )
 {
@@ -999,8 +957,36 @@ int main( int argc, char *argv[] )
     initLogStuff( executableName );
     setLogStuffDestination( kLogDebug, kLogToSyslog, kLogNormal );
 
-    fprintf(stderr, "starting \'%s\'\n", executableName );
-    logInfo( "starting \'%s\'", executableName );
+    char * mountPointPath;
+    for ( int i = 1; i < argc; ++i )
+    {
+        if ( argv[i][0] == '-' )
+        {
+            switch ( argv[i][1] )
+            {
+            case '-': /* long option */
+                logDebug( "long option: %d: %s", i, argv[i] );
+                break;
+
+            case 'd':
+            case 'o': /* option ia followed by a parameter */
+                logDebug( "option: %d: %s %s", i, argv[i], argv[i+1]);
+                ++i; /* swallow the parameter */
+                break;
+
+            default:
+                break;
+            }
+        }
+        else
+        {
+            mountPointPath = argv[i];
+            logDebug( "path: %2d: \'%s\'\n", i, mountPointPath );
+        }
+    }
+
+    fprintf(stderr, "starting %s mounted on %s\n", executableName, mountPointPath );
+    logInfo( "starting %s mounted on %s ", executableName, mountPointPath );
 
     result = fuse_main( argc, argv, &operations, NULL );
 
